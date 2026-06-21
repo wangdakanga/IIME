@@ -122,3 +122,46 @@ jobs:
             bin/Release/IIME.pdb
             IIME.plgx
           if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: IIME-build
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep -oP 'IIME:\K[\d.]+' update.txt)
+          if [ -z "$VERSION" ]; then
+            echo "Could not parse version from update.txt" >&2
+            exit 1
+          fi
+          TAG="v$(echo "$VERSION" | cut -d. -f1-3)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release version: $VERSION (tag: $TAG)"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: IIME ${{ steps.version.outputs.tag }}
+          files: |
+            IIME.plgx
+            bin/Release/IIME.dll
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
