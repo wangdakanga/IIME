@@ -36,10 +36,10 @@ jobs:
             throw "Downloaded file is not a ZIP archive (got HTML redirect page?)"
           }
 
-          $dir = Join-Path $env:RUNNER_TEMP "KeePass"
-          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $keepassDir = Join-Path $env:RUNNER_TEMP "KeePass"
+          Expand-Archive -Path $zip -DestinationPath $keepassDir -Force
 
-          $keepass = Join-Path $dir "KeePass.exe"
+          $keepass = Join-Path $keepassDir "KeePass.exe"
           if (-not (Test-Path $keepass)) {
             throw "KeePass.exe not found in extracted archive"
           }
@@ -53,39 +53,65 @@ jobs:
           New-Item -ItemType Directory -Force -Path "bin\Debug" | Out-Null
           Copy-Item $keepass "bin\Debug\KeePass.exe"
 
-          "KEEPASS_EXE=$keepass" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
       - name: Build Release
         run: msbuild IIME.sln /p:Configuration=Release /p:Platform="Any CPU" /verbosity:minimal
 
-      - name: Prepare PLGX source directory
-        shell: pwsh
-        run: |
-          $staging = Join-Path $env:RUNNER_TEMP "IIME"
-          New-Item -ItemType Directory -Force -Path $staging | Out-Null
-          Copy-Item IIME.cs, IIME.csproj, update.txt -Destination $staging
-          Copy-Item Properties -Destination $staging -Recurse
-          "PLGX_STAGING=$staging" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
       - name: Create PLGX
         shell: pwsh
         run: |
-          $staging = $env:PLGX_STAGING
-          & $env:KEEPASS_EXE --plgx-create $staging `
-            --plgx-prereq-os:Windows `
-            --plgx-prereq-net:4.7.2 `
-            --plgx-prereq-kp:2.61 `
-            --debug
+          $keepassDir = Join-Path $env:RUNNER_TEMP "KeePass"
+          $keepass = Join-Path $keepassDir "KeePass.exe"
+          if (-not (Test-Path $keepass)) {
+            throw "KeePass.exe not found at $keepass"
+          }
 
-          $plgx = Join-Path (Split-Path $staging -Parent) "IIME.plgx"
+          # KeePass 要求 --plgx-create 使用绝对路径
+          $staging = [System.IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP "IIME"))
+          if (Test-Path $staging) {
+            Remove-Item $staging -Recurse -Force
+          }
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+
+          Copy-Item IIME.cs, IIME.csproj, update.txt -Destination $staging
+          Copy-Item Properties -Destination (Join-Path $staging "Properties") -Recurse
+
+          # csproj 引用了 bin\Debug\KeePass.exe，打包进 PLGX 时一并带上
+          $stagingKeePassDir = Join-Path $staging "bin\Debug"
+          New-Item -ItemType Directory -Force -Path $stagingKeePassDir | Out-Null
+          Copy-Item $keepass (Join-Path $stagingKeePassDir "KeePass.exe")
+
+          Write-Host "Creating PLGX from $staging"
+          $args = @(
+            "--plgx-create", $staging,
+            "--plgx-prereq-os:Windows",
+            "--plgx-prereq-net:4.7.2",
+            "--plgx-prereq-kp:2.61",
+            "--debug"
+          )
+
+          # 必须在 KeePass 目录下运行，否则可能找不到依赖 DLL
+          $proc = Start-Process -FilePath $keepass -ArgumentList $args -WorkingDirectory $keepassDir -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) {
+            throw "KeePass --plgx-create failed with exit code $($proc.ExitCode)"
+          }
+
+          # 输出文件名为 <staging目录名>.plgx，位于 staging 的父目录
+          $plgxName = (Split-Path $staging -Leaf) + ".plgx"
+          $plgx = Join-Path (Split-Path $staging -Parent) $plgxName
+          Write-Host "Expected PLGX path: $plgx"
+
           if (-not (Test-Path $plgx)) {
-            throw "PLGX file was not created at $plgx"
+            Write-Host "PLGX not found at expected path, searching under $env:RUNNER_TEMP ..."
+            $found = Get-ChildItem $env:RUNNER_TEMP -Filter "*.plgx" -Recurse -ErrorAction SilentlyContinue
+            $found | ForEach-Object { Write-Host "  Found: $($_.FullName)" }
+            throw "PLGX file was not created"
           }
 
           Copy-Item $plgx (Join-Path $env:GITHUB_WORKSPACE "IIME.plgx")
+          Write-Host "Created PLGX ($((Get-Item $plgx).Length) bytes)"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
