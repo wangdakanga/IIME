@@ -140,11 +140,13 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # 保持写权限以推送 Tag 和 Release
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 必须获取完整历史，否则本地无法创建并推送 Tag
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -165,15 +167,43 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Release version: $VERSION (tag: $TAG)"
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+      # ================= 核心修改 1：导入您的 GPG 密钥 =================
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v6
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: IIME ${{ steps.version.outputs.tag }}
-          files: |
-            IIME.plgx
-            bin/Release/IIME.dll
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+          git_config_global: true
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_tag_gpgsign: true # 确保 Tag 会自动被签名
+
+      # ================= 核心修改 2：签名 Tag 并发布 Release =================
+      - name: Publish GitHub Release
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # 1. 检查 Release 是否已存在
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — skipping."
+            exit 0
+          fi
+
+          # 2. 本地创建带 GPG 签名的 Tag 并推送到远端
+          # -s 参数代表使用刚刚导入的 GPG 密钥进行签名
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Creating signed git tag $TAG..."
+            git tag -s "$TAG" -m "Release $TAG"
+            git push origin "$TAG"
+          else
+            echo "Tag $TAG already exists."
+          fi
+
+          # 3. 基于这个已经经过您个人 GPG 签名的 Tag 创建 Release
+          gh release create "$TAG" \
+            IIME.plgx \
+            "bin/Release/IIME.dll" \
+            --title "IIME $TAG" \
+            --generate-notes
