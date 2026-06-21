@@ -16,6 +16,10 @@ env:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
 
     steps:
       - name: Checkout
@@ -112,6 +116,14 @@ jobs:
 
           Copy-Item $plgx (Join-Path $env:GITHUB_WORKSPACE "IIME.plgx")
           Write-Host "Created PLGX ($((Get-Item $plgx).Length) bytes)"
+
+      - name: Attest build artifacts
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            IIME.plgx
+            bin/Release/IIME.dll
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
